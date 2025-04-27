@@ -1,0 +1,561 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the CC BY-NC 4.0 license found in the
+# LICENSE file in the root directory of this source tree.
+
+from __future__ import annotations
+import torch
+
+torch.set_float32_matmul_precision("high")
+
+import numpy as np
+import dataclasses
+from metamotivo.buffers.buffers import DictBuffer
+from metamotivo.td3_action_latent_rewards import FBAgent, FBAgentConfig
+from metamotivo.pretrained_models import WALKER_ONLINE_BFM_MODEL
+from metamotivo.nn_models import eval_mode
+from tqdm import tqdm
+import time
+from dm_control import suite
+import random
+from pathlib import Path
+import wandb
+import json
+from typing import List
+import mujoco
+import warnings
+import tyro
+from dmc_tasks import dmc
+from logging_utils.logx import EpochLogger
+
+ALL_TASKS = {
+    "walker": ["walk", "run", "stand", "spin"],
+    "cheetah": ["walk", "run", "walk_backward", "run_backward"],
+    "pointmass": ["reach_top_left", "reach_top_right", "reach_bottom_right", "reach_bottom_left", "loop", "square", "fast_slow"],
+    "quadruped": ["jump", "walk", "run", "stand"],
+}
+
+
+
+
+def create_agent(
+    domain_name="walker",
+    task_name="walk",
+    device="cpu",
+    compile=False,
+    cudagraphs=False,
+    residual_critic = True,
+    zero_shot_initialization=True
+) -> FBAgent:
+    if domain_name not in ["walker", "pointmass", "cheetah", "quadruped"]:
+        raise RuntimeError('FB configuration defined only for "walker", "pointmass", "cheetah", "quadruped"')
+    env = dmc.make(f"{domain_name}_{task_name}")
+    agent_config = FBAgentConfig()
+    agent_config.model.obs_dim = env.observation_spec().shape[0]
+    agent_config.model.action_dim = env.action_spec().shape[0]
+    agent_config.model.device = device
+    agent_config.model.norm_obs = False
+    agent_config.model.seq_length = 1
+    agent_config.train.batch_size = 1024
+    agent_config.train.residual_critic = residual_critic
+    agent_config.train.zero_shot_initialization = zero_shot_initialization
+    # archi
+    if domain_name in ["walker", "pointmass"]:
+        agent_config.model.archi.z_dim = 100
+    else:
+        agent_config.model.archi.z_dim = 50
+    agent_config.model.archi.norm_z = True
+    agent_config.model.archi.actor.hidden_dim = 1024
+    agent_config.model.archi.actor.hidden_layers = 2
+    agent_config.model.archi.b.norm = True
+    agent_config.model.archi.b.hidden_dim = 256
+    agent_config.model.archi.f.hidden_dim = 1024
+    agent_config.model.archi.f.hidden_layers = 1
+    
+    agent_config.model.archi.b.hidden_layers = 2
+
+    agent_config.model.archi.q.residual_hidden_dim = 256
+    # optim
+    if domain_name == "pointmass":
+        agent_config.train.lr_f = 1e-4
+        agent_config.train.lr_b = 1e-6
+        agent_config.train.lr_actor = 1e-6
+    else:
+        agent_config.train.lr_f = 1e-4
+        agent_config.train.lr_b = 1e-4
+        agent_config.train.lr_actor = 1e-4
+    agent_config.train.fb_target_tau = 0.005 # changed TODO
+    agent_config.train.ortho_coef = 1
+    agent_config.train.train_goal_ratio = 0.5
+    agent_config.train.fb_pessimism_penalty = 0.0
+    agent_config.train.actor_pessimism_penalty = 0.0
+
+    if domain_name == "pointmass":
+        agent_config.train.discount = 0.99
+    else:
+        agent_config.train.discount = 0.98
+    agent_config.compile = compile
+    agent_config.cudagraphs = cudagraphs
+
+    return agent_config
+
+
+def load_data(dataset_path, expl_agent, domain_name, num_episodes=1):
+    path = Path(dataset_path) / f"{domain_name}/{expl_agent}/buffer"
+    print(f"Data path: {path}")
+    storage = {
+        "observation": [],
+        "action": [],
+        "physics": [],
+        "next": {"observation": [], "terminated": [], "physics": []},
+    }
+    files = list(path.glob("*.npz"))
+    num_episodes = min(num_episodes, len(files))
+    for i in tqdm(range(num_episodes)):
+        f = files[i]
+        data = np.load(str(f))
+        storage["observation"].append(data["observation"][:-1].astype(np.float32))
+        storage["action"].append(data["action"][1:].astype(np.float32))
+        storage["next"]["observation"].append(data["observation"][1:].astype(np.float32))
+        storage["next"]["terminated"].append(np.array(1 - data["discount"][1:], dtype=np.bool))
+        storage["physics"].append(data["physics"][:-1])
+        storage["next"]["physics"].append(data["physics"][1:])
+
+    for k in storage:
+        if k == "next":
+            for k1 in storage[k]:
+                storage[k][k1] = np.concat(storage[k][k1])
+        else:
+            storage[k] = np.concat(storage[k])
+    return storage
+
+
+def set_seed_everywhere(seed):
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+
+@dataclasses.dataclass
+class TrainConfig:
+    dataset_root: str
+    seed: int = 0
+    domain_name: str = "walker"
+    task_name: str | None = None
+    mode: str = "offline"
+    fb_type: str = "offline"
+    dataset_expl_agent: str = "rnd"
+    num_train_steps: int = 3_000_000
+    load_n_episodes: int = 5_000
+    log_every_updates: int = 10_000
+    warm_start_timesteps: int = 1000
+    update_per_timesteps: int = 1
+    actor_update_freq: int = 1
+    work_dir: str | None = None
+
+    checkpoint_every_steps: int = 2_000_000
+
+    # Algorithm specific
+    residual_critic: bool = True
+    zero_shot_initialization: bool = True 
+
+
+    # eval
+    num_eval_episodes: int = 10
+    num_inference_samples: int = 50_000
+    eval_every_steps: int = 10_000
+    eval_tasks: List[str] | None = None
+
+    # misc
+    compile: bool = False
+    cudagraphs: bool = False
+    device: str = "cuda"
+
+    # WANDB
+    use_wandb: bool = False
+    wandb_ename: str | None = None
+    wandb_gname: str | None = None
+    wandb_pname: str | None = "fb_train_dmc"
+    wandb_name_prefix: str | None = None
+
+    def __post_init__(self):
+        if self.eval_tasks is None:
+            self.eval_tasks = [self.task_name]
+
+
+class Workspace:
+    def __init__(self, cfg: TrainConfig, agent_cfg: FBAgentConfig) -> None:
+        self.cfg = cfg
+        self.agent_cfg = agent_cfg
+        if self.cfg.work_dir is None:
+            import string
+
+            tmp_name = "".join(random.choice(string.ascii_uppercase + string.digits) for _ in range(10))
+            self.work_dir = Path.cwd() / "tmp_fbcpr" / tmp_name
+            self.cfg.work_dir = str(self.work_dir)
+        else:
+            self.work_dir = Path(self.cfg.work_dir)
+        self.work_dir = Path(self.work_dir)
+        self.work_dir.mkdir(exist_ok=True, parents=True)
+        print(f"working dir: {self.work_dir}")
+
+        logger_kwargs={'output_dir':self.work_dir, 'exp_name':self.cfg.wandb_pname+'_train', 'output_fname':'train_log.txt'}
+        self.train_logger = EpochLogger(**logger_kwargs)
+        logger_kwargs={'output_dir':self.work_dir, 'exp_name':self.cfg.wandb_pname+'_eval', 'output_fname':'eval_log.txt'}
+        self.eval_logger = EpochLogger(**logger_kwargs)
+
+
+        self.agent = FBAgent(**dataclasses.asdict(self.agent_cfg))
+        
+        set_seed_everywhere(self.cfg.seed)
+
+        if self.cfg.use_wandb:
+            exp_name = "fb"
+            wandb_name = exp_name
+            if self.cfg.wandb_name_prefix:
+                wandb_name = f"{self.cfg.wandb_name_prefix}_{exp_name}"
+            # fmt: off
+            wandb_config = dataclasses.asdict(self.cfg)
+            wandb.init(entity=self.cfg.wandb_ename, project=self.cfg.wandb_pname,
+                group=self.cfg.agent.name if self.cfg.wandb_gname is None else self.cfg.wandb_gname, name=wandb_name,  # mode="disabled",
+                config=wandb_config)  # type: ignore
+            # fmt: on
+
+        with (self.work_dir / "config.json").open("w") as f:
+            json.dump(dataclasses.asdict(self.cfg), f, indent=4)
+
+    def train(self):
+        self.start_time = time.time()
+        if self.cfg.mode == "online":
+            self.train_online()
+        else:
+            self.train_offline()
+
+    def train_offline(self) -> None:
+        if self.cfg.fb_type=='online':
+            import h5py
+            # not yet supported for relabelling
+            raise NotImplementedError
+        
+            if 'walker' in self.cfg.domain_name:
+                filename = WALKER_ONLINE_BFM_MODEL+'/online_buffer.h5'
+
+            self.replay_buffer = {}
+            with h5py.File(filename, 'r') as h5f:
+                for key in h5f.keys():
+                    self.replay_buffer[key] = h5f[key][:]
+            print(f"Data successfully loaded from {filename}")
+
+        else:
+            self.replay_buffer = {}
+            # LOAD DATA FROM EXORL
+            data = load_data(
+                self.cfg.dataset_root,
+                self.cfg.dataset_expl_agent,
+                self.cfg.domain_name,
+                self.cfg.load_n_episodes,
+            )
+            data['next_observation'] = data['next']['observation']
+            data['terminated'] = data['next']['terminated']
+            self.replay_buffer = {"train": DictBuffer(capacity=data["observation"].shape[0], device=self.agent.device)}
+            self.replay_buffer["train"].extend(data)
+            print(self.replay_buffer["train"])
+            del data
+        # Setup pretrained networks
+        # 
+        print("Setting pretrained networks for task " ,self.cfg.task_name)
+        self.agent.setup_pretrained_networks(self.cfg)
+        unnorm_z_inf, z_inf, mean_cov_for_rew = self.reward_inference_with_projection(self.cfg.task_name)
+        inv_cov_for_rew = torch.inverse(mean_cov_for_rew)
+        self.agent.setup_zero_shot_initialization(unnorm_z_inf.reshape(1, -1), z_inf.reshape(1, -1))
+        
+        total_metrics = None
+        fps_start_time = time.time()
+        for t in tqdm(range(0, int(self.cfg.num_train_steps))):
+            if t % self.cfg.eval_every_steps == 0:
+                eval_dict = self.eval(t)
+                self.eval_logger.log_tabular('timestep', t)
+                for key in eval_dict.keys():
+                    self.eval_logger.log_tabular(key, eval_dict[key])
+                self.eval_logger.dump_tabular()
+
+            # torch.compiler.cudagraph_mark_step_begin()
+            
+            metrics = self.agent.update(self.replay_buffer,inv_cov_for_rew,z_inf, t)
+
+            # we need to copy tensors returned by a cudagraph module
+            if total_metrics is None:
+                total_metrics = {k: metrics[k].clone() for k in metrics.keys()}
+            else:
+                total_metrics = {k: total_metrics[k] + metrics[k] for k in metrics.keys()}
+
+            if t % self.cfg.log_every_updates == 0:
+                m_dict = {}
+                for k in sorted(list(total_metrics.keys())):
+                    tmp = total_metrics[k] / (1 if t == 0 else self.cfg.log_every_updates)
+                    m_dict[k] = np.round(tmp.mean().item(), 6)
+                m_dict["duration"] = time.time() - self.start_time
+                m_dict["FPS"] = (1 if t == 0 else self.cfg.log_every_updates) / (time.time() - fps_start_time)
+                if self.cfg.use_wandb:
+                    wandb.log(
+                        {f"train/{k}": v for k, v in m_dict.items()},
+                        step=t,
+                    )
+                print(m_dict)
+                total_metrics = None
+                fps_start_time = time.time()
+                self.train_logger.log_tabular('timestep', t)
+                for key in m_dict.keys():
+                    self.train_logger.log_tabular(key, m_dict[key])
+                self.train_logger.dump_tabular()
+        #     if t % self.cfg.checkpoint_every_steps == 0:
+        #         # import ipdb;ipdb.set_trace()
+        #         self.agent.save(str(self.work_dir / "checkpoint"))
+        # self.agent.save(str(self.work_dir / "checkpoint"))
+        return
+
+
+    def train_online(self) -> None:
+        if self.cfg.fb_type=='online':
+            import h5py
+            # not yet supported for relabelling
+            raise NotImplementedError
+        
+            if 'walker' in self.cfg.domain_name:
+                filename = WALKER_ONLINE_BFM_MODEL+'/online_buffer.h5'
+
+            self.replay_buffer = {}
+            with h5py.File(filename, 'r') as h5f:
+                for key in h5f.keys():
+                    self.replay_buffer[key] = h5f[key][:]
+            print(f"Data successfully loaded from {filename}")
+
+        else:
+            self.replay_buffer = {}
+            # LOAD DATA FROM EXORL
+            data = load_data(
+                self.cfg.dataset_root,
+                self.cfg.dataset_expl_agent,
+                self.cfg.domain_name,
+                self.cfg.load_n_episodes,
+            )
+            data['next_observation'] = data['next']['observation']
+            data['terminated'] = data['next']['terminated']
+            self.replay_buffer = {"train": DictBuffer(capacity=data["observation"].shape[0], device=self.agent.device)}
+            # import ipdb;ipdb.set_trace()
+            self.replay_buffer["train"].extend(data)
+            print(self.replay_buffer["train"])
+            del data
+        # Setup pretrained networks
+        # 
+        print("Setting pretrained networks for task " ,self.cfg.task_name)
+
+        self.agent.setup_pretrained_networks(self.cfg)
+        unnorm_z_inf, z_inf, mean_cov_for_rew = self.reward_inference_with_projection(self.cfg.task_name)
+        inv_cov_for_rew = torch.inverse(mean_cov_for_rew)
+        self.agent.setup_zero_shot_initialization(unnorm_z_inf.reshape(1, -1), z_inf.reshape(1, -1))
+        
+        # Reinitialize replay buffer for online data
+        self.replay_buffer = {"train": DictBuffer(capacity=5_000_000, device=self.agent.device)}
+        train_env = dmc.make(f"{self.cfg.domain_name}_{self.cfg.task_name}")
+        time_step = train_env.reset()
+        total_metrics = None
+        fps_start_time = time.time()
+        for t in tqdm(range(0, int(self.cfg.num_train_steps))):
+            if t % self.cfg.eval_every_steps == 0:
+                eval_dict = self.eval(t)
+                self.eval_logger.log_tabular('timestep', t)
+                for key in eval_dict.keys():
+                    self.eval_logger.log_tabular(key, eval_dict[key])
+                self.eval_logger.dump_tabular()
+
+            if time_step.last():
+                time_step = train_env.reset()
+
+            
+            with torch.no_grad(), eval_mode(self.agent._model):
+                obs = torch.tensor(
+                    time_step.observation.reshape(1, -1),
+                    device=self.agent.device,
+                    dtype=torch.float32,
+                )
+                action = self.agent.act(obs=obs, mean=False).cpu().numpy()
+                next_time_step = train_env.step(action)
+                B = self.agent._model._backward_map(obs.reshape(1, -1))
+                reward = 0.0 # replaced with latent reward during update #torch.matmul(torch.matmul(B,inv_cov_for_rew),z_inf.reshape(-1,1)).detach().item()
+                transition = {
+                    'observation': obs.cpu().numpy().reshape(1, -1),
+                    'action': action.reshape(1, -1),
+                    'reward': np.array([reward]).reshape(1, -1),
+                    'next_observation': next_time_step.observation.reshape(1, -1),
+                    'terminated': np.array([next_time_step.last()]).reshape(1, -1),
+                }
+                time_step=next_time_step
+                self.replay_buffer["train"].extend(transition)
+
+
+            metrics = None
+            # torch.compiler.cudagraph_mark_step_begin()
+            if t>=self.cfg.warm_start_timesteps:
+                for _ in range(self.cfg.update_per_timesteps):
+                    metrics = self.agent.update(self.replay_buffer,inv_cov_for_rew,z_inf, t)
+                    # metrics = self.agent.update(self.replay_buffer, t, self.cfg.actor_update_freq)
+
+                # we need to copy tensors returned by a cudagraph module
+                if metrics is not None:
+                    if total_metrics is None:
+                        total_metrics = {k: metrics[k].clone() for k in metrics.keys()}
+                    else:
+                        total_metrics = {k: total_metrics[k] + metrics[k] for k in metrics.keys()}
+
+            if t>=self.cfg.warm_start_timesteps and t % self.cfg.log_every_updates == 0 and metrics is not None:
+                m_dict = {}
+                for k in sorted(list(total_metrics.keys())):
+                    tmp = total_metrics[k] / (1 if t == 0 else self.cfg.log_every_updates)
+                    m_dict[k] = np.round(tmp.mean().item(), 6)
+                m_dict["duration"] = time.time() - self.start_time
+                m_dict["FPS"] = (1 if t == 0 else self.cfg.log_every_updates) / (time.time() - fps_start_time)
+                if self.cfg.use_wandb:
+                    wandb.log(
+                        {f"train/{k}": v for k, v in m_dict.items()},
+                        step=t,
+                    )
+                print(m_dict)
+                total_metrics = None
+                fps_start_time = time.time()
+                self.train_logger.log_tabular('timestep', t)
+                for key in m_dict.keys():
+                    self.train_logger.log_tabular(key, m_dict[key])
+                self.train_logger.dump_tabular()
+
+            # if (t+1) % self.cfg.checkpoint_every_steps == 0:
+            #     self.agent.save(str(self.work_dir / "checkpoint"))
+        # self.agent.save(str(self.work_dir / "checkpoint"))
+        return
+
+
+    def eval(self, t):
+        for task in self.cfg.eval_tasks:
+            eval_env = dmc.make(f"{self.cfg.domain_name}_{task}")
+            num_ep = self.cfg.num_eval_episodes
+            total_reward = np.zeros((num_ep,), dtype=np.float64)
+            # import ipdb;ipdb.set_trace()
+            for ep in range(num_ep):
+                time_step = eval_env.reset()
+                while not time_step.last():
+                    with torch.no_grad(), eval_mode(self.agent._model):
+                        obs = torch.tensor(
+                            time_step.observation.reshape(1, -1),
+                            # time_step.observation["observations"].reshape(1, -1),
+                            device=self.agent.device,
+                            dtype=torch.float32,
+                        )
+                        action = self.agent.act(obs=obs, mean=True).cpu().numpy()
+                    time_step = eval_env.step(action)
+                    total_reward[ep] += time_step.reward
+            m_dict = {
+                "reward": np.mean(total_reward),
+                "reward#std": np.std(total_reward),
+            }
+            if self.cfg.use_wandb:
+                wandb.log(
+                    {f"{task}/{k}": v for k, v in m_dict.items()},
+                    step=t,
+                )
+            m_dict["task"] = task
+            print(m_dict)
+            return m_dict
+
+    def reward_inference_with_projection(self, task) -> torch.Tensor:
+        env = dmc.make(f"{self.cfg.domain_name}_{task}")
+        num_samples = self.cfg.num_inference_samples
+        batch = self.replay_buffer["train"].sample(num_samples)
+        rewards = []
+        for i in range(num_samples):
+            with env._physics.reset_context():
+                env._physics.set_state(batch["next"]["physics"][i].cpu().numpy())
+                env._physics.set_control(batch["action"][i].cpu().detach().numpy())
+            mujoco.mj_forward(env._physics.model.ptr, env._physics.data.ptr)  # pylint: disable=no-member
+            mujoco.mj_fwdPosition(env._physics.model.ptr, env._physics.data.ptr)  # pylint: disable=no-member
+            mujoco.mj_sensorVel(env._physics.model.ptr, env._physics.data.ptr)  # pylint: disable=no-member
+            mujoco.mj_subtreeVel(env._physics.model.ptr, env._physics.data.ptr)  # pylint: disable=no-member
+            rewards.append(env._task.get_reward(env._physics))
+        rewards = np.array(rewards).reshape(-1, 1)
+        unnorm_z, z = self.agent._model.reward_inference_with_projection(
+            next_obs=batch["next"]["observation"],
+            reward=torch.tensor(rewards, dtype=torch.float32, device=self.agent.device),
+        )
+        # Obtain mean cov for reward inference
+        batch_size = 10000
+        mean_cov_for_rew = None
+        num_batches = 0
+        for i in range(0, num_samples, batch_size):
+            B = self.agent._model._backward_map(batch["next"]["observation"][i:i+batch_size])
+            cov_for_rew = torch.matmul(B.T,B)/B.shape[0]
+            if mean_cov_for_rew is None:
+                mean_cov_for_rew = cov_for_rew
+            else:
+                mean_cov_for_rew += cov_for_rew
+            num_batches += 1
+        mean_cov_for_rew /= num_batches
+
+
+        return unnorm_z, z, mean_cov_for_rew
+    
+    def reward_inference(self, task) -> torch.Tensor:
+        # import ipdb;ipdb.set_trace()
+        set_seed_everywhere(0)
+        env = dmc.make(f"{self.cfg.domain_name}_{task}")
+        num_samples = self.cfg.num_inference_samples
+        batch = self.replay_buffer["train"].sample(num_samples)
+        rewards = []
+        for i in range(num_samples):
+            with env._physics.reset_context():
+                env._physics.set_state(batch["next"]["physics"][i].cpu().numpy())
+                env._physics.set_control(batch["action"][i].cpu().detach().numpy())
+            mujoco.mj_forward(env._physics.model.ptr, env._physics.data.ptr)  # pylint: disable=no-member
+            mujoco.mj_fwdPosition(env._physics.model.ptr, env._physics.data.ptr)  # pylint: disable=no-member
+            mujoco.mj_sensorVel(env._physics.model.ptr, env._physics.data.ptr)  # pylint: disable=no-member
+            mujoco.mj_subtreeVel(env._physics.model.ptr, env._physics.data.ptr)  # pylint: disable=no-member
+            rewards.append(env._task.get_reward(env._physics))
+        rewards = np.array(rewards).reshape(-1, 1)
+        z = self.agent._model.reward_inference(
+            next_obs=batch["next"]["observation"],
+            reward=torch.tensor(rewards, dtype=torch.float32, device=self.agent.device),
+        )
+        # import ipdb;ipdb.set_trace()
+        return z
+    
+
+
+if __name__ == "__main__":
+    config = tyro.cli(TrainConfig)
+
+    warnings.warn(
+        "Since the original creation of ExORL, mujoco has seen many updates. To rerun all the actions and collect a physics consistent data, you may optionally use the update_data.py utility from MTM (https://github.com/facebookresearch/mtm/tree/main/research/exorl)."
+    )
+    if config.task_name is None:
+        if config.domain_name == "walker":
+            config.task_name = "walk"
+        elif config.domain_name == "cheetah":
+            config.task_name = "run"
+        elif config.domain_name == "pointmass":
+            config.task_name = "reach_top_left"
+        elif config.domain_name == "quadruped":
+            config.task_name = "run"
+        else:
+            raise RuntimeError("Unsupported domain, you need to specify task_name")
+    agent_config = create_agent(
+        domain_name=config.domain_name,
+        task_name=config.task_name,
+        device=config.device,
+        compile=config.compile,
+        cudagraphs=config.cudagraphs,
+        residual_critic = config.residual_critic,
+        zero_shot_initialization = config.zero_shot_initialization
+    )
+
+    ws = Workspace(config, agent_cfg=agent_config)
+    ws.train()
