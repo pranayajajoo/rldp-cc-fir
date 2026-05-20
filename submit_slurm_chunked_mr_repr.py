@@ -87,7 +87,7 @@ MANDATORY_ARGS = {
 
 
 HYPERPARAMETERS = {
-    "--seed": [2, 3, 4, 5, 6, 7, 8, 9, 10],
+    "--seed": [1, 2, 3, 4, 5],
     "--representation_steps": [2000000],
     "--enc_horizon": [5],
     "--encoder_hidden_dim": [512],
