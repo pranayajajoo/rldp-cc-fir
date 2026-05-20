@@ -2,7 +2,11 @@
 
 ## Remote Development
 
-This project is hosted on the remote server `fir`.
+This project is hosted on the remote server `fir`. There is no authoritative
+local working copy or local equivalent for this project; local files may be
+stale, empty, or unrelated. Run project inspection, code changes, result checks,
+Slurm operations, and Git operations on `fir` unless the user explicitly asks
+for a local-only action.
 
 Run project commands over SSH from the local machine:
 
@@ -51,6 +55,12 @@ git remote add upstream https://github.com/hari-sikchi/mr_zsrl.git
 ```
 
 For every user-requested task that changes files, make a focused commit containing only the intended edits and push it to `origin`. Before staging, inspect `git status --short` and avoid staging unrelated modified or untracked files already present in the worktree.
+
+All changes made on the `fir` server for this project must be tracked in the
+GitHub repository so they can be audited, reverted, or retracted later. Do not
+leave intentional server-side edits only in the working tree. Stage only the
+files changed for the current task, commit them with a clear message, and push
+the commit to `origin`.
 
 When the user asks to revert changes, first inspect the relevant commit history and diffs, then use a traceable revert strategy. Prefer `git revert <commit>` for already-pushed commits. For uncommitted edits, revert only the specific files or hunks involved in the requested change, and never discard unrelated user work.
 
