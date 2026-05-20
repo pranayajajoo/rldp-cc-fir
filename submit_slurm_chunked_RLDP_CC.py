@@ -59,8 +59,8 @@ SBATCH_OPTIONS = {
     "job_name": "RLDP",                       # Base job name
     "account": "rrg-whitem",                # Slurm account
     # "partition": "gpubase_bygpu_b5",        # Fir GPU partition (adjust as needed)
-    # "time": "48:00:00",                     # Time limit (HH:MM:SS)
-    "time": "0:20:00",                     # Time limit (HH:MM:SS)
+    "time": "48:00:00",                     # Time limit (HH:MM:SS)
+    # "time": "0:20:00",                     # Short smoke-test limit
     "nodes": 1,                             # 1 node
     "cpus_per_task": "2",                   # CPU cores per task
     "mem": "40G",                           # CPU RAM per job

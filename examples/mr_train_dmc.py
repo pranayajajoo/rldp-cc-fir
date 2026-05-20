@@ -289,9 +289,9 @@ class Workspace:
                 for key in m_dict.keys():
                     self.train_logger.log_tabular(key, m_dict[key])
                 self.train_logger.dump_tabular()
-            if t % self.cfg.checkpoint_every_steps == 0:
+            # if t % self.cfg.checkpoint_every_steps == 0:
                 # import ipdb;ipdb.set_trace()
-                self.agent.save(str(self.work_dir / "checkpoint"))
+                # self.agent.save(str(self.work_dir / f"step_{t}"))
         self.agent.save(str(self.work_dir / "checkpoint"))
         return
 
