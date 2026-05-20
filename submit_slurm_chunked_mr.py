@@ -63,6 +63,8 @@ SBATCH_OPTIONS = {
     "cpus_per_task": "16",                 # Adjust as needed
     "mem": "40G",                          # Adjust memory as needed
     "output": "logs/%x_%A_%a.out",         # Standard output and error log
+    "mail_user": os.environ.get("SLURM_MAIL_USER", "jajoo@ualberta.ca"),
+    "mail_type": os.environ.get("SLURM_MAIL_TYPE", "ALL"),
 }
 
 # Path configurations
@@ -177,6 +179,9 @@ def submit_chunk(chunk, sbatch_opts, chunk_idx):
         tmp_script.write(f"#SBATCH --cpus-per-task={sbatch_opts['cpus_per_task']}\n")
         # tmp_script.write(f"#SBATCH --mem={sbatch_opts['mem']}\n")
         tmp_script.write(f"#SBATCH --account=CCR24059\n")
+        if sbatch_opts.get("mail_user"):
+            tmp_script.write(f"#SBATCH --mail-user={sbatch_opts['mail_user']}\n")
+            tmp_script.write(f"#SBATCH --mail-type={sbatch_opts.get('mail_type', 'ALL')}\n")
         # Output file name includes %j for job ID
         tmp_script.write(f"#SBATCH --output=logs/%x_%j.out\n\n")  
         

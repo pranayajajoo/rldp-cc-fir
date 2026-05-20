@@ -55,3 +55,16 @@ For every user-requested task that changes files, make a focused commit containi
 When the user asks to revert changes, first inspect the relevant commit history and diffs, then use a traceable revert strategy. Prefer `git revert <commit>` for already-pushed commits. For uncommitted edits, revert only the specific files or hunks involved in the requested change, and never discard unrelated user work.
 
 After committing and pushing, report the commit hash and pushed branch.
+
+## Job Notifications
+
+Scheduled Slurm jobs should notify the user about job updates. Prefer Slack notifications to the `pj-experiments-update` channel if a Slack webhook or cluster-supported Slack integration is available. Otherwise, use email notifications to `jajoo@ualberta.ca`.
+
+For Slurm scripts, include these directives in generated batch files unless the user asks for a different notification target:
+
+```bash
+#SBATCH --mail-user=jajoo@ualberta.ca
+#SBATCH --mail-type=ALL
+```
+
+The tracked chunked MR submitter supports overriding these email settings with `SLURM_MAIL_USER` and `SLURM_MAIL_TYPE` environment variables.
