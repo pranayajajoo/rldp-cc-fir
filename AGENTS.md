@@ -68,3 +68,5 @@ For Slurm scripts, include these directives in generated batch files unless the 
 ```
 
 The tracked chunked MR submitter supports overriding these email settings with `SLURM_MAIL_USER` and `SLURM_MAIL_TYPE` environment variables.
+
+All `submit_slurm*.py` submitter files are intended to be tracked in Git and pushed to `origin` when added or changed.
