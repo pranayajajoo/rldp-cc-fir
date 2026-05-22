@@ -77,13 +77,13 @@ class FBAgent:
             weight_decay=1e-4,
         )
         self.forward_optimizer = torch.optim.Adam(
-            list(self._model._forward_map.parameters()) + list(self._model._backward_map.parameters()),
+            self._model._forward_map.parameters(),
             lr=self.cfg.train.lr_f,
             capturable=self.cfg.cudagraphs and not self.cfg.compile,
             weight_decay=self.cfg.train.weight_decay,
         )
         self.actor_optimizer = torch.optim.Adam(
-            list(self._model._actor.parameters()) + list(self._model._backward_map.parameters()),
+            self._model._actor.parameters(),
             lr=self.cfg.train.lr_actor,
             capturable=self.cfg.cudagraphs and not self.cfg.compile,
             weight_decay=self.cfg.train.weight_decay,
@@ -329,9 +329,9 @@ class FBAgent:
             _, _, target_M = self.get_targets_uncertainty(target_Ms, self.cfg.train.fb_pessimism_penalty)  # batch x batch
 
         # compute FB loss
-        obs_repr = self._model.state_representation_from_normalized_obs(obs)
+        obs_repr = self._model.state_representation_from_normalized_obs(obs, detach=True)
         Fs = self._model._forward_map(obs_repr, z, action)  # num_parallel x batch x z_dim
-        B = self._model._backward_map(goal)  # batch x z_dim
+        B = self._model._backward_map(goal).detach()  # batch x z_dim
         Ms = torch.matmul(Fs, B.T)  # num_parallel x batch x batch
 
         diff = Ms - discount * target_M  # num_parallel x batch x batch
@@ -398,7 +398,7 @@ class FBAgent:
         return self.update_td3_actor(obs=obs, z=z, clip_grad_norm=clip_grad_norm)
 
     def update_td3_actor(self, obs: torch.Tensor, z: torch.Tensor, clip_grad_norm: float | None) -> Dict[str, torch.Tensor]:
-        obs_repr = self._model.state_representation_from_normalized_obs(obs)
+        obs_repr = self._model.state_representation_from_normalized_obs(obs, detach=True)
         dist = self._model._actor(obs_repr, z, self._model.cfg.actor_std)
         action = dist.sample(clip=self.cfg.train.stddev_clip)
         Fs = self._model._forward_map(obs_repr, z, action)  # num_parallel x batch x z_dim

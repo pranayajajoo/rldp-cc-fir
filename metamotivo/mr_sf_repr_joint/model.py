@@ -105,7 +105,7 @@ class FBModel(nn.Module):
     def backward_map(self, obs: torch.Tensor):
         return self._backward_map.features(self._normalize(obs))
 
-    def state_representation_from_normalized_obs(self, obs: torch.Tensor, detach: bool = False):
+    def state_representation_from_normalized_obs(self, obs: torch.Tensor, detach: bool = True):
         if detach:
             with torch.no_grad():
                 return self._backward_map.features(obs).detach()
