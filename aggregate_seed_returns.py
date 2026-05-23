@@ -173,6 +173,74 @@ def write_summary_csv(path: Path, per_seed_rows: list[dict[str, object]], metric
         writer.writerows(summary_rows)
 
 
+def task_metric_columns(metrics: list[str]) -> list[str]:
+    return [metric for metric in metrics if metric.endswith("_reward") and metric != "average_reward"]
+
+
+def task_name(metric: str) -> str:
+    return metric.removesuffix("_reward")
+
+
+def build_per_seed_task_rows(
+    per_seed_rows: list[dict[str, object]], task_metrics: list[str]
+) -> list[dict[str, object]]:
+    task_rows: list[dict[str, object]] = []
+    for row in per_seed_rows:
+        for metric in task_metrics:
+            if row.get(metric) in (None, ""):
+                continue
+            task_rows.append(
+                {
+                    "env": row["env"],
+                    "seed": row["seed"],
+                    "timestep": row["timestep"],
+                    "task": task_name(metric),
+                    "metric": metric,
+                    "return": row[metric],
+                }
+            )
+    return task_rows
+
+
+def write_per_seed_task_csv(path: Path, rows: list[dict[str, object]]) -> None:
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["env", "seed", "timestep", "task", "metric", "return"])
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def write_per_task_summary_csv(path: Path, per_seed_task_rows: list[dict[str, object]]) -> None:
+    summary_rows: list[dict[str, object]] = []
+    groups = sorted({(str(row["env"]), str(row["task"]), str(row["metric"])) for row in per_seed_task_rows})
+    for env, task, metric in groups:
+        values = [
+            float(row["return"])
+            for row in per_seed_task_rows
+            if row["env"] == env and row["task"] == task and row["metric"] == metric
+        ]
+        summary_rows.append(
+            {
+                "env": env,
+                "task": task,
+                "metric": metric,
+                "n": len(values),
+                "mean": mean(values),
+                "std": stdev(values),
+                "stderr": stderr(values),
+                "min": min(values),
+                "max": max(values),
+            }
+        )
+
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["env", "task", "metric", "n", "mean", "std", "stderr", "min", "max"],
+        )
+        writer.writeheader()
+        writer.writerows(summary_rows)
+
+
 def print_average_reward_table(per_seed_rows: list[dict[str, object]]) -> None:
     average_rows = [row for row in per_seed_rows if row.get("average_reward") not in (None, "")]
     if not average_rows:
@@ -186,6 +254,23 @@ def print_average_reward_table(per_seed_rows: list[dict[str, object]]) -> None:
         seeds = " ".join(str(row["seed"]) for row in sorted(env_rows, key=lambda r: int(r["seed"])))
         print(
             f"{env},{len(values)},{mean(values):.6f},{stdev(values):.6f},"
+            f"{stderr(values):.6f},{seeds}"
+        )
+
+
+def print_per_task_table(per_seed_task_rows: list[dict[str, object]]) -> None:
+    if not per_seed_task_rows:
+        return
+
+    print("\nFinal per-task returns by env")
+    print("env,task,n,mean,std,stderr,seeds")
+    groups = sorted({(str(row["env"]), str(row["task"])) for row in per_seed_task_rows})
+    for env, task in groups:
+        rows = [row for row in per_seed_task_rows if row["env"] == env and row["task"] == task]
+        values = [float(row["return"]) for row in rows]
+        seeds = " ".join(str(row["seed"]) for row in sorted(rows, key=lambda r: int(r["seed"])))
+        print(
+            f"{env},{task},{len(values)},{mean(values):.6f},{stdev(values):.6f},"
             f"{stderr(values):.6f},{seeds}"
         )
 
@@ -247,8 +332,14 @@ def main() -> None:
     )
     per_seed_csv = output_dir / "per_seed_returns.csv"
     summary_csv = output_dir / "returns_summary.csv"
+    per_seed_task_csv = output_dir / "per_seed_task_returns.csv"
+    per_task_summary_csv = output_dir / "per_task_returns_summary.csv"
+    task_metrics = task_metric_columns(metrics)
+    per_seed_task_rows = build_per_seed_task_rows(per_seed_rows, task_metrics)
     write_per_seed_csv(per_seed_csv, per_seed_rows, metrics)
     write_summary_csv(summary_csv, per_seed_rows, metrics)
+    write_per_seed_task_csv(per_seed_task_csv, per_seed_task_rows)
+    write_per_task_summary_csv(per_task_summary_csv, per_seed_task_rows)
 
     print(f"Run dir: {run_dir}")
     print(f"Completion timestep: {completion_timestep}")
@@ -259,7 +350,10 @@ def main() -> None:
             print(f"  {env}: {reason}")
     print(f"Wrote: {per_seed_csv}")
     print(f"Wrote: {summary_csv}")
+    print(f"Wrote: {per_seed_task_csv}")
+    print(f"Wrote: {per_task_summary_csv}")
     print_average_reward_table(per_seed_rows)
+    print_per_task_table(per_seed_task_rows)
 
 
 if __name__ == "__main__":
