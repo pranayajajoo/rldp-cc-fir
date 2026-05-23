@@ -81,7 +81,7 @@ WORK_DIR_BASE = "/home/pranayaj/projects/def-whitem/pranayaj/results/mrzsrl/meta
 SCRIPT_PATH = "examples/mr_train_dmc.py"
 
 # New Configurations
-CODEBASE_DIR = "/home/pranayaj/projects/def-whitem/pranayaj/projects/mr_zsrl"
+CODEBASE_DIR = "/home/pranayaj/projects/def-whitem/pranayaj/projects/mr_zsrl_cheetah_edim64_ortho01"
 
 # Mandatory arguments
 MANDATORY_ARGS = {
@@ -99,15 +99,14 @@ MANDATORY_ARGS = {
 
 # Hyperparameters to sweep over
 HYPERPARAMETERS = {
-    "--seed": [2,3,4,5,6,7,8,9,10],
-    # "--seed": [1],
+    "--seed": [1,2,3,4,5,6,7,8,9,10],
     # "--seed": [7,8,9,10],
     "--representation_steps": [2000000],
     # "--representation_steps": [2000],
     "--enc_horizon":[5],
-    "--encoder_hidden_dim" : [512],
+    "--encoder_hidden_dim" : [64],
     "--encoder_norm" : [1],
-    "--ortho_coef": [1.0],
+    "--ortho_coef": [0.1],
     # Add more hyperparameters if needed
 }
 
@@ -262,7 +261,7 @@ def chunk_list(lst, n):
 
 def main():
     # Define the domains you want to train on
-    domains = ['pointmass', "walker","cheetah","quadruped"]  # You can add more: "quadruped","pointmass"
+    domains = ["cheetah"]  # You can add more: "quadruped","pointmass"
     # domains = ["walker","cheetah","quadruped"]  # You can add more: "quadruped","pointmass"
     # domains = ['pointmass']
     # Create the logs and work directories if they don't exist
