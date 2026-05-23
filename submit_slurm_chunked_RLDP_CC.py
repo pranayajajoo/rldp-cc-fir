@@ -209,6 +209,7 @@ def submit_chunk(chunk, sbatch_opts, chunk_idx):
         #   2) Run it in background (&)
         #   3) We'll collect logs separately by redirecting to a file if you like,
         #      or you can rely on the merged Slurm output above.
+        tmp_script.write("pids=()\n")
         for idx, (domain, task, hyperparams) in enumerate(chunk):
             command = construct_command(domain, task, hyperparams)
             
@@ -217,10 +218,17 @@ def submit_chunk(chunk, sbatch_opts, chunk_idx):
             #
             # For simplicity, just run in the background here
             tmp_script.write(f"{command} &\n")
+            tmp_script.write("pids+=(\"$!\")\n")
             tmp_script.write("sleep 120\n")
         
         # Wait for all parallel tasks in this chunk to finish
-        tmp_script.write("\nwait\n")
+        tmp_script.write("\nstatus=0\n")
+        tmp_script.write("for pid in \"${pids[@]}\"; do\n")
+        tmp_script.write("    if ! wait \"$pid\"; then\n")
+        tmp_script.write("        status=1\n")
+        tmp_script.write("    fi\n")
+        tmp_script.write("done\n")
+        tmp_script.write("exit \"$status\"\n")
 
         print(tmp_script)
     

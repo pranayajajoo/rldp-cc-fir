@@ -40,7 +40,7 @@ class TimeStep:
     reward: float
     discount: float
     observation: np.ndarray
-    physics: np.ndarray = dataclasses.field(default=np.ndarray([]), init=False)
+    physics: np.ndarray = dataclasses.field(default_factory=lambda: np.array([], dtype=np.float32), init=False)
 
     def first(self) -> bool:
         return self.step_type == StepType.FIRST  # type: ignore
