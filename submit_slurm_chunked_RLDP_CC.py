@@ -101,8 +101,9 @@ MANDATORY_ARGS = {
 
 # Hyperparameters to sweep over
 HYPERPARAMETERS = {
-    "--seed": [1,2,3,4,5,6,7,8,9,10],
+    "--seed": [1,2,3,4,5],
     # "--seed": [7,8,9,10],
+    "--num_train_steps": [6000000],
     "--representation_steps": [2000000],
     # "--representation_steps": [2000],
     "--enc_horizon":[5],
