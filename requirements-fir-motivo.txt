@@ -1,0 +1,6 @@
+# Runtime packages required by submit_slurm_chunked_RLDP_CC.py on Fir.
+# Install these into /home/pranayaj/projects/def-whitem/pranayaj/scratch/envs/motivo.
+dm-control==1.0.28
+dm-env==1.6
+joblib==1.5.3
+mujoco==3.3.0

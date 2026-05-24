@@ -68,7 +68,8 @@ SBATCH_OPTIONS = {
     "gres": "gpu:nvidia_h100_80gb_hbm3_3g.40gb:1",
     # ---- Required environment setup before running python ----
     "venv_activate": "/home/pranayaj/projects/def-whitem/pranayaj/scratch/envs/motivo/bin/activate",
-    "modules": "mujoco python",
+    "python_executable": "/home/pranayaj/projects/def-whitem/pranayaj/scratch/envs/motivo/bin/python",
+    "modules": "",
     "output": "/home/pranayaj/projects/def-whitem/pranayaj/results/spinningup_policyparams/logs/%x_%j.out",
     "mail_user": os.environ.get("SLURM_MAIL_USER", "jajoo@ualberta.ca"),
     "mail_type": os.environ.get("SLURM_MAIL_TYPE", "ALL"),
@@ -82,6 +83,7 @@ SCRIPT_PATH = "examples/mr_train_dmc.py"
 
 # New Configurations
 CODEBASE_DIR = "/home/pranayaj/projects/def-whitem/pranayaj/projects/mr_zsrl_cheetah_edim64_ortho01"
+PYTHON_EXECUTABLE = SBATCH_OPTIONS["python_executable"]
 
 # Mandatory arguments
 MANDATORY_ARGS = {
@@ -139,7 +141,7 @@ def construct_command(domain, task, hyperparams):
     # commands.append('export PYTHONPATH="${PYTHONPATH}:."')
     
     # Construct the Python command with arguments
-    cmd = f"python {SCRIPT_PATH} --domain_name {shlex.quote(domain)} "
+    cmd = f"{shlex.quote(PYTHON_EXECUTABLE)} {SCRIPT_PATH} --domain_name {shlex.quote(domain)} "
     
     # Add mandatory arguments
     for arg, value in MANDATORY_ARGS.items():
@@ -198,11 +200,13 @@ def submit_chunk(chunk, sbatch_opts, chunk_idx):
         tmp_script.write("set -euo pipefail\n")
         tmp_script.write(f"source {sbatch_opts['venv_activate']}\n")
         # tmp_script.write("module purge\n")
-        tmp_script.write(f"module load {sbatch_opts['modules']}\n")
-        tmp_script.write("export PYTHONPATH=\"$PYTHONPATH:.\"\n")
+        if sbatch_opts.get("modules"):
+            tmp_script.write(f"module load {sbatch_opts['modules']}\n")
+        tmp_script.write("export PYTHONNOUSERSITE=1\n")
+        tmp_script.write("export PYTHONPATH=\".\"\n")
         tmp_script.write("export MUJOCO_GL=osmesa\n")
         tmp_script.write("\n")
-        tmp_script.write("python -c \"import torch; p=torch.cuda.get_device_properties(0); print('GPU:', torch.cuda.get_device_name(0)); print('VRAM(GB):', p.total_memory/1024**3)\"\n")
+        tmp_script.write(f"{shlex.quote(PYTHON_EXECUTABLE)} -c \"import sys, torch; print('Python:', sys.executable); p=torch.cuda.get_device_properties(0); print('GPU:', torch.cuda.get_device_name(0)); print('VRAM(GB):', p.total_memory/1024**3)\"\n")
         tmp_script.write("\n")
         # Now, for each job in this chunk, we:
         #   1) Construct its command
