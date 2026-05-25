@@ -119,7 +119,7 @@ EXPERIMENT_CONFIGS = [
     {"--encoder_hidden_dim": 128, "--ortho_coef": 10.0},
     {"--encoder_hidden_dim": 256, "--ortho_coef": 0.1},
     {"--encoder_hidden_dim": 256, "--ortho_coef": 1.0},
-    {"--encoder_hidden_dim": 245, "--ortho_coef": 10.0},
+    {"--encoder_hidden_dim": 256, "--ortho_coef": 10.0},
     {"--encoder_hidden_dim": 512, "--ortho_coef": 0.1},
     {"--encoder_hidden_dim": 512, "--ortho_coef": 10.0},
 ]
