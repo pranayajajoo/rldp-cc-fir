@@ -5,7 +5,7 @@ import os
 import tempfile
 import math
 
-jobs_per_node = 2  # CC/Fir: 1 job per 40GB MIG slice
+jobs_per_node = 4  # Run four seeds per Slurm allocation.
 ALL_TASKS = {
     "walker": ["walk", "run", "stand", "flip"],
     "cheetah": ["walk", "run", "walk_backward", "run_backward"],
@@ -56,7 +56,7 @@ ALL_TASKS = {
 # Configuration for the Slurm jobs
 SBATCH_OPTIONS = {
     # ---- Compute Canada (Fir) Slurm settings ----
-    "job_name": "RLDP",                       # Base job name
+    "job_name": "RLDP_CHEETAH_GRID",          # Base job name
     "account": "rrg-whitem",                # Slurm account
     # "partition": "gpubase_bygpu_b5",        # Fir GPU partition (adjust as needed)
     "time": "48:00:00",                     # Time limit (HH:MM:SS)
@@ -107,19 +107,34 @@ HYPERPARAMETERS = {
     "--representation_steps": [2000000],
     # "--representation_steps": [2000],
     "--enc_horizon":[5],
-    "--encoder_hidden_dim" : [64],
     "--encoder_norm" : [1],
-    "--ortho_coef": [0.1],
     # Add more hyperparameters if needed
 }
 
+EXPERIMENT_CONFIGS = [
+    {"--encoder_hidden_dim": 64, "--ortho_coef": 1.0},
+    {"--encoder_hidden_dim": 64, "--ortho_coef": 10.0},
+    {"--encoder_hidden_dim": 128, "--ortho_coef": 0.1},
+    {"--encoder_hidden_dim": 128, "--ortho_coef": 1.0},
+    {"--encoder_hidden_dim": 128, "--ortho_coef": 10.0},
+    {"--encoder_hidden_dim": 256, "--ortho_coef": 0.1},
+    {"--encoder_hidden_dim": 256, "--ortho_coef": 1.0},
+    {"--encoder_hidden_dim": 245, "--ortho_coef": 10.0},
+    {"--encoder_hidden_dim": 512, "--ortho_coef": 0.1},
+    {"--encoder_hidden_dim": 512, "--ortho_coef": 10.0},
+]
 
-def generate_hyperparameter_combinations(hyperparams):
+def generate_hyperparameter_combinations(hyperparams, experiment_configs=None):
     """Generates all combinations of hyperparameters."""
     keys = list(hyperparams.keys())
     values = list(hyperparams.values())
     for combination in itertools.product(*values):
-        yield dict(zip(keys, combination))
+        base = dict(zip(keys, combination))
+        if experiment_configs is None:
+            yield base
+        else:
+            for experiment_config in experiment_configs:
+                yield {**base, **experiment_config}
 
 
 def construct_command(domain, task, hyperparams):
@@ -281,18 +296,19 @@ def main():
     os.makedirs("logs", exist_ok=True)
     os.makedirs(WORK_DIR_BASE, exist_ok=True)
     
-    # Generate all hyperparameter combinations
-    combinations = list(generate_hyperparameter_combinations(HYPERPARAMETERS))
-    
-    # Build a master list of all (domain, task, hyperparams)
+    # Build a master list of all (domain, task, hyperparams), chunked per
+    # explicit experiment config so each Slurm job runs up to four seeds from
+    # the same configuration.
     all_jobs = []
+    chunked_jobs = []
     for domain in domains:
-        tasks = ALL_TASKS[domain]
-        for hyperparams in combinations:
-            all_jobs.append((domain, "", hyperparams))
-    
-    # We now have a list of all individual jobs. We'll group them in chunks of jobs_per_node.
-    chunked_jobs = list(chunk_list(all_jobs, jobs_per_node))
+        for experiment_config in EXPERIMENT_CONFIGS:
+            config_jobs = [
+                (domain, "", hyperparams)
+                for hyperparams in generate_hyperparameter_combinations(HYPERPARAMETERS, [experiment_config])
+            ]
+            all_jobs.extend(config_jobs)
+            chunked_jobs.extend(chunk_list(config_jobs, jobs_per_node))
     
     total_jobs = len(all_jobs)
     print(f"Total individual jobs: {total_jobs}")
