@@ -64,6 +64,7 @@ SBATCH_OPTIONS = {
     "nodes": 1,                             # 1 node
     "cpus_per_task": "2",                   # CPU cores per task
     "mem": "40G",                           # CPU RAM per job
+    "exclude": "fc10713",                   # Avoid node that returned CUDA devices unavailable.
     # Request one 40GB H100 MIG slice on Fir (from `sinfo -o "%P %G"`)
     "gres": "gpu:nvidia_h100_80gb_hbm3_3g.40gb:1",
     # ---- Required environment setup before running python ----
@@ -204,6 +205,8 @@ def submit_chunk(chunk, sbatch_opts, chunk_idx):
         tmp_script.write(f"#SBATCH --nodes={sbatch_opts['nodes']}\n")
         tmp_script.write(f"#SBATCH --cpus-per-task={sbatch_opts['cpus_per_task']}\n")
         tmp_script.write(f"#SBATCH --mem={sbatch_opts['mem']}\n")
+        if sbatch_opts.get("exclude"):
+            tmp_script.write(f"#SBATCH --exclude={sbatch_opts['exclude']}\n")
         tmp_script.write(f"#SBATCH --gres={sbatch_opts['gres']}\n")
         tmp_script.write(f"#SBATCH --account={sbatch_opts['account']}\n")
         if sbatch_opts.get("mail_user"):
