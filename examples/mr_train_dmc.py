@@ -126,7 +126,7 @@ def load_data(dataset_path, expl_agent, domain_name, num_episodes=1):
         storage["observation"].append(data["observation"][:-1].astype(np.float32))
         storage["action"].append(data["action"][1:].astype(np.float32))
         storage["next"]["observation"].append(data["observation"][1:].astype(np.float32))
-        storage["next"]["terminated"].append(np.array(1 - data["discount"][1:], dtype=np.bool))
+        storage["next"]["terminated"].append(np.array(1 - data["discount"][1:], dtype=bool))
         storage["physics"].append(data["physics"][:-1])
         storage["next"]["physics"].append(data["physics"][1:])
 
