@@ -133,9 +133,9 @@ def load_data(dataset_path, expl_agent, domain_name, num_episodes=1):
     for k in storage:
         if k == "next":
             for k1 in storage[k]:
-                storage[k][k1] = np.concat(storage[k][k1])
+                storage[k][k1] = np.concatenate(storage[k][k1])
         else:
-            storage[k] = np.concat(storage[k])
+            storage[k] = np.concatenate(storage[k])
     storage["next_observation_hash"]= np.random.permutation(np.arange(0,len(storage["observation"]))).reshape(-1,1)
     return storage
 
