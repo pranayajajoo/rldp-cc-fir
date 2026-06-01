@@ -64,7 +64,7 @@ SBATCH_OPTIONS = {
     "nodes": 1,                             # 1 node
     "cpus_per_task": "2",                   # CPU cores per task
     "mem": "40G",                           # CPU RAM per job
-    "exclude": "fc10713",                   # Avoid node that returned CUDA devices unavailable.
+    "exclude": "fc10713,fc10604",           # Avoid nodes with CUDA init hangs or unavailable devices.
     # Request one 40GB H100 MIG slice on Fir (from `sinfo -o "%P %G"`)
     "gres": "gpu:nvidia_h100_80gb_hbm3_3g.40gb:1",
     # ---- Required environment setup before running python ----
@@ -222,6 +222,7 @@ def submit_chunk(chunk, sbatch_opts, chunk_idx):
         if sbatch_opts.get("modules"):
             tmp_script.write(f"module load {sbatch_opts['modules']}\n")
         tmp_script.write("export PYTHONNOUSERSITE=1\n")
+        tmp_script.write("export PYTHONUNBUFFERED=1\n")
         tmp_script.write("export PYTHONPATH=\".\"\n")
         tmp_script.write("export MUJOCO_GL=osmesa\n")
         tmp_script.write("\n")
